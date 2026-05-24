@@ -1,51 +1,166 @@
-# VSS Sub-Agent — Deployment Plan
+# VSS Sub-Agent — Deployment Plan (v2)
 
-**Project:** VSS Pravesh AI Agent  
-**Type:** Containerized Sub-Agent  
-**Parent:** LEO (Root Orchestrator)  
-**Date:** 2026-05-24
-
----
-
-## Deployment Options Compared
-
-| Option | OpenClaw Managed | Own Container | Hermes Involved |
-|--------|-----------------|---------------|-----------------|
-| **Option A: OpenClaw Sub-Agent** | ✅ Yes | ❌ No | ❌ No |
-| Option B: OpenClaw + Hermes | ✅ Yes | ❌ No | ✅ Yes |
-| **Option C: Docker + OpenClaw (Recommended)** | Partial | ✅ Yes | ❌ No |
-| Option D: Pure Docker + API | ❌ No | ✅ Yes | Optional |
-
-### Recommendation: **Option C — Docker + OpenClaw Hybrid**
-
-**Why not Option A (pure OpenClaw sub-agent)?**
-- OpenClaw sub-agents run as isolated sessions but share the same host process
-- No separate container means no isolated memory store, no independent healthcheck
-- Credentials would need to be shared at host level
-
-**Why not Option D (pure Docker)?**
-- You'd lose OpenClaw's session management, tool routing, and Telegram integration
-- More ops overhead for Abhishek to manage
-
-**Why Option C is best:**
-- vsustain-agent runs in its own Docker container
-- OpenClaw manages the session lifecycle via `sessions_spawn`
-- Pravesh talks to the agent via Telegram (through LEO or directly)
-- Agent has its own Redis + Postgres for isolated memory
-- LEO supervises and can audit all agent actions
+**Version:** 2.0  
+**Date:** 2026-05-24  
+**Updated by:** LEO
 
 ---
 
-## Phase 1: Infrastructure Setup (Week 1)
+## What's Different in v2
 
-### 1.1 Create Agent Workspace
+- **Telegram first** — Pravesh talks to agent on Telegram, not WhatsApp
+- **Immediate test** — Abhishek tests now, Pravesh gets it later after training
+- **Learning agent** — adapts through every conversation
+- **LEO approval only on sensitive ops** — not on routine actions
+
+---
+
+## Deployment Option: Option C (Docker + OpenClaw Hybrid)
+
+### Why Option C
+- vsustain-agent runs in **its own Docker container** → isolated, own memory
+- OpenClaw manages the **session lifecycle** via `sessions_spawn`
+- Pravesh talks to the agent via **Telegram bot** (his phone)
+- Agent has **own Redis + Postgres** for isolated memory
+- LEO **supervises** via log review — not always in the loop
+- Agent **learns** through each conversation
+
+### Why NOT Option A (OpenClaw sub-agent only)
+- No separate container → no isolated memory store
+- Credentials shared at host level → security risk
+- No independent healthcheck → Pravesh's agent crashes affect others
+
+### Why NOT Option D (pure Docker)
+- Lose OpenClaw's session management, tool routing, Telegram integration
+- More ops overhead for Abhishek
+
+---
+
+## Phase 0: Telegram Bot Live (THIS WEEK) — PRIORITY
+
+**Goal:** Abhishek tests the agent on Telegram immediately. No external integrations yet.
+
+### Step 0.1: Create PraveshAgent Telegram Bot
+
+Abhishek needs to:
+1. Open Telegram → chat with **@BotFather**
+2. Send `/newbot`
+3. Name: `VSS Pravesh Agent` (or whatever Pravesh prefers)
+4. Username: `<something>_bot` (must end in `bot`)
+5. Copy the **bot token** (format: `123456789:ABCdef...`)
+6. Share the token with LEO
+
+### Step 0.2: Create Agent Workspace
+
 ```bash
-mkdir -p /home/aiops/leo/agents/vsustain/{workspace/{context,memory/customers,plans/pending,credentials},tools,logs}
+mkdir -p /home/aiops/leo/agents/vsustain/workspace/{context,memory/daily,memory/customers,memory/pravesh-profile,plans/pending,logs/actions,logs/conversations,credentials}
 ```
 
-### 1.2 Create Docker Compose Stack
+### Step 0.3: Create Credentials File
+
+```bash
+# /home/aiops/leo/agents/vsustain/.env.vss
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+VSS_ZOHO_TOKEN=your_zoho_token_here
+VSS_ZOHO_DC=in
+WHATSAPP_API_KEY=your_whatsapp_key_here
+GOOGLE_CONTACTS_CLIENT_ID=your_google_client_id
+GOOGLE_CONTACTS_CLIENT_SECRET=your_google_secret
+# PostgreSQL for vsustain
+POSTGRES_DB=vsustain
+POSTGRES_USER=pravesh
+POSTGRES_PASSWORD=secure_password_here
+```
+
+### Step 0.4: Deploy Container
+
+```bash
+cd /home/aiops/leo/agents/vsustain
+docker-compose -f vsustain-stack.yml up -d
+```
+
+### Step 0.5: Abhishek Tests
+
+Abhishek messages the PraveshAgent bot and:
+- Introduces Pravesh (name, business, style)
+- Shares context about VSS
+- Tests basic commands
+- Agent learns and adapts
+
+### Step 0.6: Refine & Train
+
+Based on test conversations:
+- LEO reviews logs
+- LEO trains agent on Pravesh's personality
+- Agent's responses refined
+
+### Step 0.7: Hand to Pravesh
+
+- Pravesh gets the bot username
+- Abhishek monitors for 1 week
+- Refine based on real usage
+
+---
+
+## Phase 1: Zoho + Contacts Integration (Week 1-2)
+
+After Phase 0 is stable:
+
+### 1.1 Zoho CRM
+- Create VSS API credentials at `crm.zoho.in`
+- Add to `.env.vss`
+- Test: agent can read dealer list, update records
+- Log all Zoho operations
+
+### 1.2 Google Contacts
+- Create Google Cloud project → Contacts API enabled
+- OAuth credentials → add to `.env.vss`
+- Test: "find Amit" → returns number + email
+- Agent stores found contacts in `memory/customers/`
+
+### 1.3 Train on Customer Data
+- Upload existing customer list (if any)
+- Agent learns names, numbers, preferences
+- Stored in `memory/customers/`
+
+---
+
+## Phase 2: WhatsApp Customer Send (Week 3-4)
+
+After Phase 1 is stable:
+
+### 2.1 WhatsApp Integration
+- Option A: WhatsApp Business API (official)
+- Option B: n8n WhatsApp webhook
+- Option C: wa-js (WhatsApp Web automation)
+- **Recommendation:** Start with n8n webhook → most flexible
+
+### 2.2 Price Quote Template
+- VSS product list + pricing
+- Template for WhatsApp messages
+- Agent generates on command
+
+### 2.3 Test Customer Flow
+- Pravesh: "send to Rajesh about 5kVA"
+- Agent: Google Contacts → Rajesh → WhatsApp → done
+- Log action
+
+---
+
+## Phase 3: Full Autonomy + Learning (Week 5+)
+
+- Agent operates independently
+- LEO reviews logs daily
+- Learns from every interaction
+- Adapts to Pravesh's style
+
+---
+
+## Docker Compose (Full Stack)
+
 ```yaml
-# vsustain-stack.yml
+# vsustain-stack.yml (complete)
+
 services:
   vsustain-agent:
     build:
@@ -62,6 +177,8 @@ services:
     memory_limit: 1GB
     networks:
       - vsustain-net
+    volumes:
+      - /home/aiops/leo/agents/vsustain/workspace:/app/workspace
 
   vsustain-redis:
     image: redis:7-alpine
@@ -83,7 +200,7 @@ services:
     environment:
       POSTGRES_DB: vsustain
       POSTGRES_USER: pravesh
-      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
     volumes:
       - vsustain-pg-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -113,176 +230,74 @@ networks:
     driver: bridge
 ```
 
-### 1.3 Create Dockerfile
+---
+
+## Dockerfile
+
 ```dockerfile
+# Dockerfile.agent
 FROM node:18-alpine
 
-# Install Python + whisper deps
+# Install Python + ffmpeg (for Whisper)
 RUN apk add --no-cache python3 ffmpeg
 
-# Install whisper (CPU only)
+# Install Whisper + torch (CPU only)
 RUN pip install --no-cache-dir openai-whisper torch
 
+# Copy workspace
+COPY workspace/ /app/workspace/
+
+# Set working dir
 WORKDIR /app
 
-# Copy agent workspace
-COPY workspace/ ./workspace/
-
-# Entrypoint
+# Entrypoint — runs OpenClaw agent session
 CMD ["node", "/app/agent-runner.js"]
 ```
 
-### 1.4 Create Agent Config
-```yaml
-# agent-config.yml
-agent_id: vsustain
-agent_name: Pravesh
-role: vss-field-sales-assistant
-parent: leo
-cohort: VSS
-
-memory:
-  type: hybrid  # redis + file
-  redis:
-    host: vsustain-redis
-    port: 6379
-    db: 0
-  file:
-    path: /app/workspace/memory
-
-tools:
-  - whatsapp-sender
-  - zoho-crm-client
-  - price-quotation-gen
-  - task-scheduler
-  - google-contacts
-  - google-messages
-  - web-search
-
-limits:
-  max_concurrent_tasks: 3
-  max_daily_messages: 500
-  require_leo_approval_for:
-    - new_automation
-    - new_workflow
-    - crm_schema_change
-
-language:
-  primary: hi  # Hindi
-  fallback: en  # English
-  mixed: true   # Can switch mid-conversation
-```
-
 ---
 
-## Phase 2: Integration Setup (Week 2)
+## What Abhishek Needs to Provide NOW
 
-### 2.1 WhatsApp Integration
-- Option A: WhatsApp Business API (official, paid)
-- Option B: n8n WhatsApp webhook (more flexible)
-- Option C: wa-js (browser automation for WhatsApp Web)
-- **Recommendation:** Start with n8n webhook → most flexible for Pravesh's use case
+| Item | How to Get | Status |
+|------|-----------|--------|
+| **Telegram Bot Token** | @BotFather → /newbot | ⏳ NEED NOW |
+| Zoho API Token | crm.zoho.in → Developer Console | ⏳ Needed in Week 1 |
+| WhatsApp approach | Business API / n8n / wa-js | ⏳ Needed in Week 2 |
+| Google Contacts credentials | Google Cloud Console | ⏳ Needed in Week 2 |
+| VSS product list | Share with LEO | ⏳ Needed in Week 3 |
 
-### 2.2 Zoho CRM Setup
-- Create VSS API credentials in Zoho Developer Console
-- Store in `.env.vss`
-- Test connection with read/write access to UPS module
-
-### 2.3 Google Integration
-- Google Contacts API (read-only for customer lookup)
-- Google Messages API (if available in India) — or fallback to SMS
-
----
-
-## Phase 3: Agent Development (Week 3-4)
-
-### 3.1 Core Capabilities (Priority Order)
-
-1. **Price Quotation Generator**
-   - Input: customer name, products, quantities
-   - Output: formatted WhatsApp message with pricing
-   - Template-based with VSS branding
-
-2. **Follow-up Message Scheduler**
-   - Daily follow-up list from CRM
-   - Scheduled WhatsApp messages at set times
-   - Track delivery status
-
-3. **CRM Query Handler**
-   - "Show me today's meetings"
-   - "Who are my pending follow-ups"
-   - "Add notes to dealer X"
-
-4. **Task Reminder System**
-   - "Remind me to call customer X tomorrow"
-   - "Create follow-up for dealer Y"
-   - "Set reminder for 3pm"
-
-5. **Market Research**
-   - "What's the price of 5kW solar panel"
-   - "Who is Luminous's competitor"
-   - "Latest solar subsidy news"
-
-### 3.2 Voice Command Pipeline
-```
-Pravesh voice note → Telegram → OpenClaw → LEO routes to → vsustain-agent
-                                                              │
-                                                     Whisper STT
-                                                              │
-                                                     Parse intent
-                                                              │
-                                                     Execute action
-                                                              │
-                                                     Respond via WhatsApp/Telegram
-```
-
----
-
-## Phase 4: Testing & Deployment (Week 5)
-
-### 4.1 Testing Checklist
-- [ ] WhatsApp message delivery (price quote)
-- [ ] WhatsApp message delivery (follow-up)
-- [ ] Zoho CRM read (dealer list)
-- [ ] Zoho CRM write (dealer meets entry)
-- [ ] Google Contacts lookup
-- [ ] Task scheduling (cron)
-- [ ] Voice note → action pipeline
-- [ ] LEO supervision loop (agent → LEO → approval)
-
-### 4.2 Go-Live Steps
-1. Deploy vsustain-stack on VM
-2. Register Pravesh's phone as test user
-3. Run 1-week pilot with Abhishek monitoring
-4. Train Pravesh on voice commands
-5. Full rollout
+**Without bot token → can't deploy.**
 
 ---
 
 ## Rollback Plan
 
-| Failure | Rollback Action |
-|---------|----------------|
+| Failure | Rollback |
+|---------|----------|
 | Agent crashes | Docker auto-restart (`unless-stopped`) |
-| Redis data lost | Data persists in `vsustain-redis-data` volume |
-| Postgres data lost | Data persists in `vsustain-pg-data` volume |
-| WhatsApp integration fails | Fallback to Telegram-only for Pravesh |
-| Zoho fails | Agent queues actions, retries with backoff |
-| Full compromise | Kill container → LEO takes over Pravesh tasks manually |
+| Redis data lost | Persistent volume → restored |
+| Postgres data lost | Persistent volume → restored |
+| WhatsApp fails | Telegram-only operation continues |
+| Zoho fails | Agent queues → retries → LEO notified |
+| Full compromise | Kill container → LEO takes over manually |
 
 ---
 
-## Estimated Cost
+## RAM Calculation
 
-| Resource | Cost |
-|----------|------|
-| Additional RAM (2GB more) | ~₹500/month on Azure |
-| WhatsApp Business API | ₹200-500/month |
-| n8n cloud (if not self-hosted) | ₹0-500/month |
-| Zoho CRM (already have) | existing |
+| Component | RAM |
+|-----------|-----|
+| vsustain-agent (OpenClaw session + tools) | 512 MB |
+| vsustain-redis | 256 MB |
+| vsustain-postgres | 512 MB |
+| vsustain-browser (chromium) | 256 MB |
+| Whisper STT (during voice transcribe) | +400 MB |
+| **Total peak** | **~1.9 GB** |
+| **Currently used** | ~2.1 GB |
+| **Free** | ~5.7 GB available |
 
-**Total additional cost:** ~₹500-1000/month
+**Actually — we have enough RAM.** Current system has 7.8 GB total, ~5.7 GB available. No extra RAM needed. The earlier estimate was conservative. Agent will run fine.
 
 ---
 
-*Deployment Plan v1.0 — LEO — 2026-05-24*
+*Deployment Plan v2 — LEO — 2026-05-24*
