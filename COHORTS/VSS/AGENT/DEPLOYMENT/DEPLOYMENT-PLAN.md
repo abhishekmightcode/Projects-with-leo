@@ -1,303 +1,438 @@
-# VSS Sub-Agent — Deployment Plan (v2)
+# VSS Sub-Agent — Deployment Plan (v3)
 
-**Version:** 2.0  
-**Date:** 2026-05-24  
-**Updated by:** LEO
-
----
-
-## What's Different in v2
-
-- **Telegram first** — Pravesh talks to agent on Telegram, not WhatsApp
-- **Immediate test** — Abhishek tests now, Pravesh gets it later after training
-- **Learning agent** — adapts through every conversation
-- **LEO approval only on sensitive ops** — not on routine actions
+**Version:** 3.0  
+**Date:** 2026-05-25  
+**Updated by:** LEO  
 
 ---
 
-## Deployment Option: Option C (Docker + OpenClaw Hybrid)
+## Prerequisites
 
-### Why Option C
-- vsustain-agent runs in **its own Docker container** → isolated, own memory
-- OpenClaw manages the **session lifecycle** via `sessions_spawn`
-- Pravesh talks to the agent via **Telegram bot** (his phone)
-- Agent has **own Redis + Postgres** for isolated memory
-- LEO **supervises** via log review — not always in the loop
-- Agent **learns** through each conversation
-
-### Why NOT Option A (OpenClaw sub-agent only)
-- No separate container → no isolated memory store
-- Credentials shared at host level → security risk
-- No independent healthcheck → Pravesh's agent crashes affect others
-
-### Why NOT Option D (pure Docker)
-- Lose OpenClaw's session management, tool routing, Telegram integration
-- More ops overhead for Abhishek
+Before starting, ensure:
+- [ ] Docker and Docker Compose installed on AIforce host
+- [ ] `openclaw:latest` image available (or to be pulled)
+- [ ] VSS Telegram bot token ready (`@VSustainAIbot`)
+- [ ] LEO is stabilized and operational
+- [ ] Provider auth finalized
 
 ---
 
-## Phase 0: Telegram Bot Live (THIS WEEK) — PRIORITY
+## Implementation Phases
 
-**Goal:** Abhishek tests the agent on Telegram immediately. No external integrations yet.
+### Phase 1: Host Preparation (Steps 1–3)
 
-### Step 0.1: Create PraveshAgent Telegram Bot
-
-Abhishek needs to:
-1. Open Telegram → chat with **@BotFather**
-2. Send `/newbot`
-3. Name: `VSS Pravesh Agent` (or whatever Pravesh prefers)
-4. Username: `<something>_bot` (must end in `bot`)
-5. Copy the **bot token** (format: `123456789:ABCdef...`)
-6. Share the token with LEO
-
-### Step 0.2: Create Agent Workspace
+#### STEP 1 — Create Container Directory
 
 ```bash
-mkdir -p /home/aiops/leo/agents/vsustain/workspace/{context,memory/daily,memory/customers,memory/pravesh-profile,plans/pending,logs/actions,logs/conversations,credentials}
+mkdir -p ~/agents/vss
+mkdir -p ~/agents/vss/memory
+mkdir -p ~/agents/vss/logs
+mkdir -p ~/agents/vss/governance
+mkdir -p ~/agents/vss/tasks
+mkdir -p ~/agents/vss/audits
+mkdir -p ~/agents/vss/workflows
+mkdir -p ~/agents/vss/prompts
+mkdir -p ~/agents/vss/sessions
+mkdir -p ~/agents/vss/backups
 ```
 
-### Step 0.3: Create Credentials File
+**Directory purpose:**
+
+| Directory | Purpose |
+|-----------|---------|
+| `memory/` | Customer data, learning, context |
+| `logs/` | Action logs, conversation logs, anomaly logs |
+| `governance/` | identity.md, rules.md, permissions.md, escalations.md |
+| `tasks/` | Pending tasks, task queue |
+| `audits/` | Audit records for LEO review |
+| `workflows/` | Reusable workflow templates |
+| `prompts/` | System prompts, response templates |
+| `sessions/` | Session state and history |
+| `backups/` | Backup snapshots |
+
+---
+
+#### STEP 2 — Create Docker Network
 
 ```bash
-# /home/aiops/leo/agents/vsustain/.env.vss
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-VSS_ZOHO_TOKEN=your_zoho_token_here
-VSS_ZOHO_DC=in
-WHATSAPP_API_KEY=your_whatsapp_key_here
-GOOGLE_CONTACTS_CLIENT_ID=your_google_client_id
-GOOGLE_CONTACTS_CLIENT_SECRET=your_google_secret
-# PostgreSQL for vsustain
-POSTGRES_DB=vsustain
-POSTGRES_USER=pravesh
-POSTGRES_PASSWORD=secure_password_here
+docker network create agent-network
 ```
 
-### Step 0.4: Deploy Container
+This network isolates all agent containers from other host traffic while allowing shared infrastructure access.
+
+---
+
+#### STEP 3 — Create VSS PostgreSQL Schema
+
+Connect to `leo_memory` database and create isolated VSS schema:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS vss;
+
+-- Customers table
+CREATE TABLE IF NOT EXISTS vss.customers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(255),
+    source VARCHAR(100),
+    status VARCHAR(50) DEFAULT 'new',
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Interactions table
+CREATE TABLE IF NOT EXISTS vss.interactions (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER REFERENCES vss.customers(id),
+    type VARCHAR(50), -- call, whatsapp, meeting
+    direction VARCHAR(10), -- inbound, outbound
+    summary TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tasks table
+CREATE TABLE IF NOT EXISTS vss.tasks (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER REFERENCES vss.customers(id),
+    description TEXT NOT NULL,
+    due_date TIMESTAMP,
+    status VARCHAR(50) DEFAULT 'pending',
+    priority VARCHAR(20) DEFAULT 'normal',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Audit table
+CREATE TABLE IF NOT EXISTS vss.audit (
+    id SERIAL PRIMARY KEY,
+    action VARCHAR(100) NOT NULL,
+    actor VARCHAR(100),
+    details JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+---
+
+### Phase 2: Redis Namespace (Step 4)
+
+#### STEP 4 — Create VSS Redis Namespace
+
+Set up isolated Redis namespace for VSS (done via application config, not Redis MULTI):
+
+```
+vss:sessions    → session data
+vss:memory      → short-term memory
+vss:tasks       → task queue state
+vss:state       → agent runtime state
+vss:cache       → cached lookups
+```
+
+Configure in OpenClaw profile or agent startup:
 
 ```bash
-cd /home/aiops/leo/agents/vsustain
-docker-compose -f vsustain-stack.yml up -d
+# In agent environment or config
+REDIS_NAMESPACE=vss
 ```
 
-### Step 0.5: Abhishek Tests
-
-Abhishek messages the PraveshAgent bot and:
-- Introduces Pravesh (name, business, style)
-- Shares context about VSS
-- Tests basic commands
-- Agent learns and adapts
-
-### Step 0.6: Refine & Train
-
-Based on test conversations:
-- LEO reviews logs
-- LEO trains agent on Pravesh's personality
-- Agent's responses refined
-
-### Step 0.7: Hand to Pravesh
-
-- Pravesh gets the bot username
-- Abhishek monitors for 1 week
-- Refine based on real usage
-
 ---
 
-## Phase 1: Zoho + Contacts Integration (Week 1-2)
+### Phase 3: Container Creation (Steps 5–6)
 
-After Phase 0 is stable:
+#### STEP 5 — Create Docker Compose Service
 
-### 1.1 Zoho CRM
-- Create VSS API credentials at `crm.zoho.in`
-- Add to `.env.vss`
-- Test: agent can read dealer list, update records
-- Log all Zoho operations
-
-### 1.2 Google Contacts
-- Create Google Cloud project → Contacts API enabled
-- OAuth credentials → add to `.env.vss`
-- Test: "find Amit" → returns number + email
-- Agent stores found contacts in `memory/customers/`
-
-### 1.3 Train on Customer Data
-- Upload existing customer list (if any)
-- Agent learns names, numbers, preferences
-- Stored in `memory/customers/`
-
----
-
-## Phase 2: WhatsApp Customer Send (Week 3-4)
-
-After Phase 1 is stable:
-
-### 2.1 WhatsApp Integration
-- Option A: WhatsApp Business API (official)
-- Option B: n8n WhatsApp webhook
-- Option C: wa-js (WhatsApp Web automation)
-- **Recommendation:** Start with n8n webhook → most flexible
-
-### 2.2 Price Quote Template
-- VSS product list + pricing
-- Template for WhatsApp messages
-- Agent generates on command
-
-### 2.3 Test Customer Flow
-- Pravesh: "send to Rajesh about 5kVA"
-- Agent: Google Contacts → Rajesh → WhatsApp → done
-- Log action
-
----
-
-## Phase 3: Full Autonomy + Learning (Week 5+)
-
-- Agent operates independently
-- LEO reviews logs daily
-- Learns from every interaction
-- Adapts to Pravesh's style
-
----
-
-## Docker Compose (Full Stack)
+Create `/home/aiops/agents/vss/docker-compose.yml`:
 
 ```yaml
-# vsustain-stack.yml (complete)
+version: '3.8'
 
 services:
-  vsustain-agent:
-    build:
-      context: /home/aiops/leo/agents/vsustain
-      dockerfile: Dockerfile.agent
-    container_name: vsustain-agent
-    env_file: /home/aiops/leo/agents/vsustain/.env.vss
-    depends_on:
-      vsustain-redis:
-        condition: service_healthy
-      vsustain-postgres:
-        condition: service_healthy
+  vss-agent:
+    image: openclaw:latest
+    container_name: vss-agent
     restart: unless-stopped
-    memory_limit: 1GB
-    networks:
-      - vsustain-net
-    volumes:
-      - /home/aiops/leo/agents/vsustain/workspace:/app/workspace
-
-  vsustain-redis:
-    image: redis:7-alpine
-    container_name: vsustain-redis
-    volumes:
-      - vsustain-redis-data:/data
-    restart: unless-stopped
-    networks:
-      - vsustain-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  vsustain-postgres:
-    image: postgres:16-alpine
-    container_name: vsustain-postgres
     environment:
-      POSTGRES_DB: vsustain
-      POSTGRES_USER: pravesh
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      TELEGRAM_BOT_TOKEN: ${VSS_TELEGRAM_TOKEN}
+      OPENCLAW_PROFILE: vss
+      REDIS_NAMESPACE: vss
+      POSTGRES_SCHEMA: vss
+      DATABASE_URL: postgres://${PG_USER}:${PG_PASSWORD}@host.docker.internal:5432/leo_memory
+      REDIS_URL: redis://host.docker.internal:6379
     volumes:
-      - vsustain-pg-data:/var/lib/postgresql/data
-    restart: unless-stopped
+      - /home/aiops/agents/vss:/workspace
     networks:
-      - vsustain-net
+      - agent-network
+    ports:
+      - "18801:18789"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pravesh"]
+      test: ["CMD", "curl", "-f", "http://localhost:18789/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-
-  vsustain-browser:
-    image: ghcr.io/browserless/chromium:latest
-    container_name: vsustain-browser
-    ports:
-      - "9223:9222"
-    restart: unless-stopped
-    networks:
-      - vsustain-net
-
-volumes:
-  vsustain-redis-data:
-  vsustain-pg-data:
 
 networks:
-  vsustain-net:
-    driver: bridge
+  agent-network:
+    external: true
 ```
 
 ---
 
-## Dockerfile
+#### STEP 6 — Initialize Isolated OpenClaw Profile
 
-```dockerfile
-# Dockerfile.agent
-FROM node:18-alpine
+Inside the container (first run or via exec):
 
-# Install Python + ffmpeg (for Whisper)
-RUN apk add --no-cache python3 ffmpeg
+```bash
+# Create isolated profile
+openclaw --profile vss init
 
-# Install Whisper + torch (CPU only)
-RUN pip install --no-cache-dir openai-whisper torch
+# Start gateway with isolated profile
+openclaw --profile vss gateway
+```
 
-# Copy workspace
-COPY workspace/ /app/workspace/
+This prevents:
+- Session contamination from other agents
+- Config pollution between profiles
+- Telegram routing overlap
 
-# Set working dir
-WORKDIR /app
+---
 
-# Entrypoint — runs OpenClaw agent session
-CMD ["node", "/app/agent-runner.js"]
+### Phase 4: Governance Setup (Steps 7–8)
+
+#### STEP 7 — Create Governance Files
+
+Create at `/home/aiops/agents/vss/governance/`:
+
+**`identity.md`:**
+```markdown
+# VSS Agent Identity
+
+**Name:** PraveshAgent
+**Role:** VSS Field Sales AI Assistant
+**Owner:** Mr. Pravesh Kumar Tiwari
+**Supervisor:** LEO (Root Orchestrator)
+**Telegram:** @VSustainAIbot
+
+## Purpose
+Handle day-to-day VSS sales operations: customer communication,
+price quotes, follow-ups, CRM updates.
+
+## Boundaries
+- Cannot modify host infrastructure
+- Cannot access other agent memory
+- Must escalate deletions to LEO
+- Must report anomalies to LEO
+```
+
+**`rules.md`:**
+```markdown
+# VSS Agent Rules
+
+## Core Rules
+1. Pravesh talks to agent via Telegram ONLY
+2. Agent talks to customers via WhatsApp ONLY (on Pravesh's command)
+3. All customer data stays in VSS schema/namespace
+4. All actions logged to audit table
+5. LEO reviews logs daily
+
+## Permission Boundaries
+- CAN: send WhatsApp, update CRM, create tasks, lookup contacts
+- CANNOT: delete records, modify infra, access other agents
+- MUST: escalate deletions, report anomalies, log all actions
+
+## Response Requirements
+- Always confirm actions to Pravesh
+- Quote prices clearly with terms
+- Log before executing external actions
+```
+
+**`permissions.md`:**
+```markdown
+# VSS Agent Permissions
+
+## Allowed Actions
+| Action | Scope | Requires Approval |
+|--------|-------|-------------------|
+| Send WhatsApp | Customer list | No |
+| Update CRM | Own schema only | No |
+| Create task | VSS tasks | No |
+| Lookup contact | Google Contacts | No |
+| Generate quote | Internal templates | No |
+
+## Blocked Actions
+| Action | Reason |
+|--------|--------|
+| Delete customer | LEO approval required |
+| Delete interaction | LEO approval required |
+| Modify infra | Never allowed |
+| Access other schemas | Forbidden |
+| Shell commands | Forbidden |
+
+## Escalation Triggers
+- DELETE requests → pause → LEO approval
+- Unknown package install → block → LEO notification
+- VM/host access attempt → block → LEO incident log
+- >500 messages/hour → rate limit → LEO alert
+```
+
+**`escalations.md`:**
+```markdown
+# VSS Agent Escalation Matrix
+
+## Immediate Escalation (→ LEO NOW)
+- Customer delete request
+- Data deletion of any kind
+- Suspicious behavior detected
+- Unauthorized access attempt
+- System integrity issue
+
+## Deferred Escalation (→ LEO within 1 hour)
+- Anomaly pattern detected
+- Unusual timing patterns
+- Failed automation recovery
+- New external service intent
+
+## Routine Reports (→ LEO daily)
+- Daily action summary
+- Task completion report
+- Anomaly log review
+- Health status
+
+## Escalation Format
+```
+ESCALATION: [TYPE]
+Agent: vss-agent
+Time: [timestamp]
+Details: [description]
+Action Taken: [if any]
+Required Response: [yes/no]
+```
 ```
 
 ---
 
-## What Abhishek Needs to Provide NOW
+#### STEP 8 — Create Governance Archive
 
-| Item | How to Get | Status |
-|------|-----------|--------|
-| **Telegram Bot Token** | @BotFather → /newbot | ⏳ NEED NOW |
-| Zoho API Token | crm.zoho.in → Developer Console | ⏳ Needed in Week 1 |
-| WhatsApp approach | Business API / n8n / wa-js | ⏳ Needed in Week 2 |
-| Google Contacts credentials | Google Cloud Console | ⏳ Needed in Week 2 |
-| VSS product list | Share with LEO | ⏳ Needed in Week 3 |
-
-**Without bot token → can't deploy.**
+```bash
+cd /home/aiops/agents/vss/governance
+tar -czf governance-backup-$(date +%Y%m%d).tar.gz *.md
+```
 
 ---
 
-## Rollback Plan
+### Phase 5: Observability Setup (Step 9)
 
-| Failure | Rollback |
-|---------|----------|
-| Agent crashes | Docker auto-restart (`unless-stopped`) |
-| Redis data lost | Persistent volume → restored |
-| Postgres data lost | Persistent volume → restored |
-| WhatsApp fails | Telegram-only operation continues |
-| Zoho fails | Agent queues → retries → LEO notified |
-| Full compromise | Kill container → LEO takes over manually |
+#### STEP 9 — Configure Health Checks and Logging
 
----
+Ensure agent exports:
 
-## RAM Calculation
+**Health endpoint:** `GET /health` → returns `{"status": "ok"}`
 
-| Component | RAM |
-|-----------|-----|
-| vsustain-agent (OpenClaw session + tools) | 512 MB |
-| vsustain-redis | 256 MB |
-| vsustain-postgres | 512 MB |
-| vsustain-browser (chromium) | 256 MB |
-| Whisper STT (during voice transcribe) | +400 MB |
-| **Total peak** | **~1.9 GB** |
-| **Currently used** | ~2.1 GB |
-| **Free** | ~5.7 GB available |
+**Heartbeat:** Every 60 seconds to Uptime Kuma
 
-**Actually — we have enough RAM.** Current system has 7.8 GB total, ~5.7 GB available. No extra RAM needed. The earlier estimate was conservative. Agent will run fine.
+**Log shipping:** All logs to Loki via Promtail or direct shipper
+
+```yaml
+# Add to docker-compose.yml under vss-agent
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
 
 ---
 
-*Deployment Plan v2 — LEO — 2026-05-24*
+### Phase 6: Validation (Steps 10–12)
+
+#### STEP 10 — Validate Telegram Routing
+
+```bash
+# Test bot is responding
+curl -s "https://api.telegram.org/bot${VSS_TELEGRAM_TOKEN}/getMe"
+```
+
+Then manually test: send message to @VSustainAIbot — should respond.
+
+---
+
+#### STEP 11 — Validate Database Connection
+
+```bash
+# Inside container
+psql "$DATABASE_URL" -c "SELECT 1 FROM vss.customers LIMIT 1;"
+```
+
+Should return `1` without error.
+
+---
+
+#### STEP 12 — Validate Redis Namespace
+
+```bash
+# Inside container
+redis-cli -u "$REDIS_URL" SELECT 1  # if using separate DB, or
+redis-cli -u "$REDIS_URL" KEYS "vss:*"
+```
+
+Should show `vss:*` keys only.
+
+---
+
+## Deployment Checklist
+
+### Pre-Deployment
+- [ ] Docker network `agent-network` exists
+- [ ] PostgreSQL schema `vss` created with tables
+- [ ] Redis namespace `vss:*` configured
+- [ ] Telegram bot token in `.env` or secrets manager
+- [ ] Governance files created
+- [ ] OpenClaw image available
+
+### Deployment
+- [ ] `docker-compose up -d vss-agent`
+- [ ] Container started and healthy
+- [ ] Telegram bot responding to test message
+- [ ] Database connection verified
+- [ ] Redis connection verified
+
+### Post-Deployment
+- [ ] First interaction logged
+- [ ] LEO can read VSS audit logs
+- [ ] Uptime Kuma shows agent healthy
+- [ ] Pravesh introduced to bot
+- [ ] First test quote sent
+
+---
+
+## Rollback Procedure
+
+```bash
+# Stop container (preserves logs/data)
+docker-compose down
+
+# Restore previous version
+docker-compose pull
+docker-compose up -d
+
+# Full reset (nuclear)
+docker-compose down -v  # WARNING: deletes volumes
+# Only if data loss is acceptable
+```
+
+---
+
+## Current Status
+
+| Phase | Status |
+|-------|--------|
+| Phase 1: Host Preparation | 📋 Pending |
+| Phase 2: Redis Namespace | 📋 Pending |
+| Phase 3: Container Creation | 📋 Pending |
+| Phase 4: Governance Setup | 📋 Pending |
+| Phase 5: Observability | 📋 Pending |
+| Phase 6: Validation | 📋 Pending |
+
+---
+
+*Deployment Plan v3 — LEO — 2026-05-25*
